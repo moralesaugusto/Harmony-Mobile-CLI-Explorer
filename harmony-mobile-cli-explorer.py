@@ -1,0 +1,601 @@
+"""
+Harmony Mobile Interactive API Explorer
+
+Author:
+    Augusto Morales
+
+License:
+    Open source. You may use, modify, and distribute this code.
+    Please keep attribution to the original author:
+    Augusto Morales.
+
+Notes:
+    This version uses a conservative hardcoded API map:
+      - API prefixes and several endpoint patterns are aligned to published
+        Check Point Harmony Mobile API documentation.
+      - The "policy" path is set to the singular form based on your validated
+        finding: /app/SBM/external_api/v1/policy/
+      - The device risk filter uses risk__in instead of risk=high.
+
+    If you export the live Swagger spec as JSON/YAML, this file can be updated
+    to match every endpoint exactly.
+"""
+
+import json
+import sys
+import time
+from typing import Any, Dict, List, Optional, Tuple
+
+import requests
+
+CONFIG_FILE = "credentials.txt"
+
+# ============================================================================
+# Conservative hardcoded API catalog
+# Verified prefix family:
+#   /app/SBM/external_api/...
+#
+# IMPORTANT:
+# - "policy" is singular here based on your validation.
+# - "risk__in=High" fixes the bad "risk=high" example.
+# ============================================================================
+
+API_ENDPOINTS: Dict[str, List[Tuple[str, str, str]]] = {
+    "Alerts": [
+        ("List alerts", "GET", "/app/SBM/external_api/v3/alert/?id__gt=0"),
+    ],
+    "Devices": [
+        ("List all devices", "GET", "/app/SBM/external_api/v1/device_status/?format=json"),
+        ("Get device status", "GET", "/app/SBM/external_api/v1/device_status/{device_id}/?format=json"),
+        ("Create device", "POST", "/app/SBM/external_api/v2/device/"),
+        ("Delete device", "DELETE", "/app/SBM/external_api/v1/device/{device_id}/"),
+    ],
+    "Device Registration": [
+        (
+            "Get registration details",
+            "GET",
+            "/app/SBM/external_api/v1/device_status/{device_id}/get_registration_details",
+        ),
+        (
+            "Resend activation email",
+            "POST",
+            "/app/SBM/external_api/v1/device_status/{device_id}/resend",
+        ),
+    ],
+    "Device Risk & Security": [
+        ("Get device risk profile", "GET", "/app/SBM/external_api/v1/device_status/{device_id}/?format=json"),
+        ("List high risk devices", "GET", "/app/SBM/external_api/v1/device_status/?format=json&risk__in=High"),
+        # Optional status example if you want it:
+        # ("List active devices", "GET", "/app/SBM/external_api/v1/device_status/?format=json&status__in=Active"),
+    ],
+    "Policy": [
+        ("List policy objects", "GET", "/app/SBM/external_api/v1/policy/"),
+    ],
+    "Groups": [
+        ("List groups", "GET", "/app/SBM/external_api/v1/groups/"),
+        ("Create group", "POST", "/app/SBM/external_api/v1/groups/"),
+    ],
+    "Raw API Explorer": [],
+}
+
+# ============================================================================
+# Interactive request schemas for write operations
+# ============================================================================
+
+REQUEST_SCHEMAS: Dict[Tuple[str, str], Dict[str, Any]] = {
+    (
+        "POST",
+        "/app/SBM/external_api/v2/device/",
+    ): {
+        "title": "Create device",
+        "type": "object",
+        "properties": {
+            "name": {
+                "type": "string",
+                "required": False,
+                "description": "Friendly user or device name.",
+            },
+            "email": {
+                "type": "string",
+                "required": True,
+                "description": "User email address.",
+            },
+            "groups": {
+                "type": "array",
+                "required": False,
+                "items_type": "string",
+                "description": "Optional list of groups.",
+            },
+        },
+    },
+    (
+        "POST",
+        "/app/SBM/external_api/v1/groups/",
+    ): {
+        "title": "Create group",
+        "type": "object",
+        "properties": {
+            "name": {
+                "type": "string",
+                "required": True,
+                "description": "Group name.",
+            },
+            "parent_id": {
+                "type": "integer",
+                "required": False,
+                "description": "Parent group ID. Optional. Defaults to ALL group in many workflows.",
+            },
+        },
+    },
+    (
+        "POST",
+        "/app/SBM/external_api/v1/device_status/{device_id}/resend",
+    ): {
+        "title": "Resend activation",
+        "type": "object",
+        "properties": {}
+    },
+}
+
+
+def safe_input(prompt: str) -> str:
+    """Read user input safely and exit cleanly on Ctrl+C."""
+    try:
+        return input(prompt)
+    except KeyboardInterrupt:
+        print("\nExiting...")
+        sys.exit(0)
+
+
+def prompt_yes_no(prompt: str, default: Optional[bool] = None) -> Optional[bool]:
+    """Prompt for yes/no input."""
+    while True:
+        suffix = " [y/n]"
+        if default is True:
+            suffix = " [Y/n]"
+        elif default is False:
+            suffix = " [y/N]"
+
+        raw = safe_input(f"{prompt}{suffix}: ").strip().lower()
+
+        if raw == "":
+            return default
+        if raw in {"y", "yes", "true", "1"}:
+            return True
+        if raw in {"n", "no", "false", "0"}:
+            return False
+
+        print("Invalid value. Please enter y or n.")
+
+
+def prompt_scalar(field_name: str, field_schema: Dict[str, Any]) -> Any:
+    """Prompt for a scalar value based on a local schema."""
+    field_type = field_schema.get("type", "string")
+    required = field_schema.get("required", False)
+    description = field_schema.get("description", "")
+    default = field_schema.get("default")
+
+    while True:
+        print(f"\nField: {field_name}")
+        if description:
+            print(f"Description: {description}")
+        print(f"Type: {field_type}")
+        if default is not None:
+            print(f"Default: {default}")
+
+        if field_type == "boolean":
+            value = prompt_yes_no(
+                f"Enter value for {field_name}",
+                default=default if isinstance(default, bool) else None,
+            )
+            if value is None and required:
+                print("This field is required.")
+                continue
+            return value
+
+        raw = safe_input(f"Enter value for {field_name} (blank to skip): ").strip()
+
+        if raw == "":
+            if default is not None:
+                return default
+            if required:
+                print("This field is required.")
+                continue
+            return None
+
+        try:
+            if field_type == "integer":
+                return int(raw)
+            if field_type == "number":
+                return float(raw)
+            return raw
+        except ValueError:
+            print(f"Invalid {field_type} value. Try again.")
+
+
+def prompt_array(field_name: str, field_schema: Dict[str, Any]) -> List[Any]:
+    """Prompt for an array value."""
+    required = field_schema.get("required", False)
+    description = field_schema.get("description", "")
+    items_type = field_schema.get("items_type", "string")
+
+    print(f"\nField: {field_name}")
+    if description:
+        print(f"Description: {description}")
+    print(f"Type: array[{items_type}]")
+    print("Enter one value at a time. Leave blank to finish.")
+
+    values: List[Any] = []
+
+    while True:
+        raw = safe_input(f"{field_name}[{len(values)}]: ").strip()
+
+        if raw == "":
+            if required and not values:
+                print("At least one value is required.")
+                continue
+            break
+
+        try:
+            if items_type == "integer":
+                values.append(int(raw))
+            elif items_type == "number":
+                values.append(float(raw))
+            else:
+                values.append(raw)
+        except ValueError:
+            print(f"Invalid {items_type} value. Try again.")
+
+    return values
+
+
+def build_payload_from_schema(schema: Dict[str, Any]) -> Dict[str, Any]:
+    """Build a JSON payload interactively from a local schema."""
+    payload: Dict[str, Any] = {}
+
+    print("\n--- Interactive JSON Builder ---")
+    print(f"Schema: {schema.get('title', 'Request payload')}")
+
+    properties = schema.get("properties", {})
+
+    for field_name, field_schema in properties.items():
+        field_type = field_schema.get("type", "string")
+
+        if field_type == "array":
+            value = prompt_array(field_name, field_schema)
+            if value or field_schema.get("required", False):
+                payload[field_name] = value
+            continue
+
+        value = prompt_scalar(field_name, field_schema)
+        if value is not None:
+            payload[field_name] = value
+
+    print("\nGenerated payload:")
+    print(json.dumps(payload, indent=2))
+
+    confirm = prompt_yes_no("Use this payload?", default=True)
+    if confirm is False:
+        print("Payload discarded. Returning empty payload.")
+        return {}
+
+    return payload
+
+
+class HarmonyMobileClient:
+    """Minimal API client for Harmony Mobile."""
+
+    def __init__(self) -> None:
+        self.client_id: Optional[str] = None
+        self.access_key: Optional[str] = None
+        self.auth_url: Optional[str] = None
+        self.base_url: Optional[str] = None
+
+        self.token: Optional[str] = None
+        self.token_expiry: float = 0
+
+        # Cache of device_id -> status
+        self.devices: Dict[str, str] = {}
+
+        self.load_credentials()
+
+    def load_credentials(self) -> None:
+        """Load credentials from credentials.txt."""
+        try:
+            with open(CONFIG_FILE, "r", encoding="utf-8") as file_handle:
+                for line in file_handle:
+                    line = line.strip()
+                    if not line:
+                        continue
+
+                    key, value = line.split("=", 1)
+
+                    if key == "client_id":
+                        self.client_id = value
+                    elif key == "access_key":
+                        self.access_key = value
+                    elif key == "auth_url":
+                        self.auth_url = value
+                    elif key == "base_url":
+                        self.base_url = value
+
+        except Exception as exc:
+            print("Error loading credentials:", exc)
+            sys.exit(1)
+
+    def authenticate(self) -> None:
+        """Authenticate and store bearer token and expiry."""
+        try:
+            payload = {
+                "clientId": self.client_id,
+                "accessKey": self.access_key,
+            }
+
+            response = requests.post(self.auth_url, json=payload, timeout=30)
+            response.raise_for_status()
+
+            data = response.json()["data"]
+            self.token = data["token"]
+            self.token_expiry = time.time() + data.get("expiresIn", 3600)
+
+            print("\nAuthenticated successfully")
+
+        except Exception as exc:
+            print("Authentication failed:", exc)
+            raise
+
+    def ensure_token(self) -> None:
+        """Refresh token if missing or close to expiry."""
+        if not self.token or time.time() > self.token_expiry - 60:
+            self.authenticate()
+
+    def request(self, method: str, endpoint: str, payload: Optional[Dict[str, Any]] = None) -> Any:
+        """Execute an API request and retry once on 401/403."""
+        try:
+            self.ensure_token()
+
+            headers = {
+                "Authorization": f"Bearer {self.token}",
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            }
+
+            url = f"{self.base_url}{endpoint}"
+
+            response = requests.request(
+                method=method,
+                url=url,
+                headers=headers,
+                json=payload,
+                timeout=30,
+            )
+
+            if response.status_code in {401, 403}:
+                print("Token expired. Re-authenticating...")
+                self.authenticate()
+
+                headers["Authorization"] = f"Bearer {self.token}"
+
+                response = requests.request(
+                    method=method,
+                    url=url,
+                    headers=headers,
+                    json=payload,
+                    timeout=30,
+                )
+
+            try:
+                return response.json()
+            except ValueError:
+                return response.text
+
+        except Exception as exc:
+            print("Request error:", exc)
+            return None
+
+    def load_devices(self) -> None:
+        """Load device internal_id and status into memory."""
+        print("\nLoading devices into memory...")
+
+        try:
+            data = self.request("GET", "/app/SBM/external_api/v1/device_status/?format=json")
+
+            if not data:
+                return
+
+            # Many Harmony APIs return list data under a top-level 'objects' key.
+            # Keep this flexible to support either common shape.
+            devices = data.get("devices", data.get("objects", []))
+
+            for device in devices:
+                internal_id = str(device.get("internal_id"))
+                status = str(device.get("status"))
+
+                if internal_id and internal_id != "None":
+                    self.devices[internal_id] = status
+
+            print(f"Loaded {len(self.devices)} devices")
+            print("Devices were already loaded in memory.")
+            print("Cached fields: internal_id, status\n")
+
+            for device_id, status in list(self.devices.items())[:5]:
+                print(f"internal_id: {device_id}  status: {status}")
+
+        except Exception as exc:
+            print("Device preload failed:", exc)
+
+    def select_device(self) -> str:
+        """Select a device from memory or enter one manually."""
+        device_ids = list(self.devices.keys())
+
+        if not device_ids:
+            return safe_input("Enter device_id: ")
+
+        print("\nKnown devices loaded in memory:")
+
+        for index, device_id in enumerate(device_ids[:20], start=1):
+            print(f"{index}) {device_id} ({self.devices[device_id]})")
+
+        choice = safe_input("\nSelect device number or press Enter to type manually: ").strip()
+
+        if choice == "":
+            return safe_input("Enter device_id: ")
+
+        try:
+            selected_index = int(choice) - 1
+            if 0 <= selected_index < len(device_ids):
+                return device_ids[selected_index]
+        except ValueError:
+            pass
+
+        return safe_input("Enter device_id: ")
+
+
+def select_category() -> Optional[str]:
+    """Display top-level category menu."""
+    categories = list(API_ENDPOINTS.keys())
+
+    while True:
+        print("\n========== Harmony Mobile API ==========\n")
+
+        for index, category_name in enumerate(categories, start=1):
+            print(f"{index}) {category_name}")
+
+        print("0) Exit")
+
+        choice = safe_input("\nSelect category: ").strip()
+
+        if choice == "0":
+            return None
+
+        try:
+            selected_index = int(choice) - 1
+            if 0 <= selected_index < len(categories):
+                return categories[selected_index]
+        except ValueError:
+            pass
+
+        print("Invalid selection. Try again.")
+
+
+def select_api_call(category: str) -> Tuple[str, str, str]:
+    """Display API calls for the selected category."""
+    endpoints = API_ENDPOINTS[category]
+
+    if category == "Raw API Explorer":
+        return ("RAW", "RAW", "Custom")
+
+    while True:
+        print("\n----- Available API Calls -----\n")
+
+        for index, (description, method, path) in enumerate(endpoints, start=1):
+            print(f"{index}) {description}")
+            print(f"   {method} {path}\n")
+
+        choice = safe_input("Select API call: ").strip()
+
+        try:
+            selected_index = int(choice) - 1
+            if 0 <= selected_index < len(endpoints):
+                description, method, path = endpoints[selected_index]
+                return method, path, description
+        except ValueError:
+            pass
+
+        print("Invalid selection. Try again.")
+
+
+def prompt_parameters(client: HarmonyMobileClient, endpoint: str) -> str:
+    """Replace path parameters like {device_id}."""
+    while "{" in endpoint:
+        start = endpoint.index("{")
+        end = endpoint.index("}")
+
+        parameter_name = endpoint[start + 1:end]
+
+        if parameter_name == "device_id":
+            value = client.select_device()
+        else:
+            value = safe_input(f"Enter value for {parameter_name}: ")
+
+        endpoint = endpoint.replace("{" + parameter_name + "}", value)
+
+    return endpoint
+
+
+def get_interactive_payload(method: str, endpoint_template: str) -> Optional[Dict[str, Any]]:
+    """Build payload for POST/PATCH/PUT from local schema if available."""
+    if method not in {"POST", "PATCH", "PUT"}:
+        return None
+
+    schema = REQUEST_SCHEMAS.get((method, endpoint_template))
+
+    if schema is not None:
+        return build_payload_from_schema(schema)
+
+    print("\nNo local schema found for this write operation.")
+    print("Falling back to manual JSON input.")
+    raw = safe_input("JSON payload (blank for empty): ").strip()
+
+    if raw == "":
+        return {}
+
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as exc:
+        print("Invalid JSON:", exc)
+        return {}
+
+
+def main() -> None:
+    """Main interactive loop."""
+    client = HarmonyMobileClient()
+
+    try:
+        client.authenticate()
+        client.load_devices()
+    except Exception as exc:
+        print("Startup error:", exc)
+
+    while True:
+        try:
+            category = select_category()
+
+            if category is None:
+                break
+
+            if category == "Raw API Explorer":
+                method = safe_input("HTTP Method: ").upper().strip()
+                endpoint = safe_input("Endpoint path: ").strip()
+                payload = None
+
+                if method in {"POST", "PUT", "PATCH"}:
+                    raw = safe_input("JSON payload (blank for empty): ").strip()
+                    if raw:
+                        try:
+                            payload = json.loads(raw)
+                        except json.JSONDecodeError as exc:
+                            print("Invalid JSON:", exc)
+                            continue
+
+            else:
+                method, endpoint_template, description = select_api_call(category)
+                endpoint = prompt_parameters(client, endpoint_template)
+                payload = get_interactive_payload(method, endpoint_template)
+
+            result = client.request(method, endpoint, payload)
+
+            print("\nResponse:\n")
+            try:
+                print(json.dumps(result, indent=2))
+            except Exception:
+                print(result)
+
+        except Exception as exc:
+            print("\nError occurred:", exc)
+            print("Returning to main menu...\n")
+
+
+if __name__ == "__main__":
+    main()
+  
