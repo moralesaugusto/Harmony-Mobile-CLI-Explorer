@@ -25,7 +25,7 @@ cd Harmony-Mobile-CLI-Explorer
 
 python3 -m venv venv
 
-ource venv/bin/activate
+source venv/bin/activate
 
 pip install -r requirements.txt
 
