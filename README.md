@@ -9,7 +9,7 @@ https://app.swaggerhub.com/apis-docs/Check-Point/harmony-mobile/1.0.0-oas7
 To install it follow the following steps:
 
 git clone https://github.com/moralesaugusto/Harmony-Mobile-CLI-Explorer.git
-cd Harmony-Mobile-CLI-Explorer 
+cd Harmony-Mobile-CLI-Explorer \n
 python3 -m venv venv
 ource venv/bin/activate
 pip install -r requirements.txt
