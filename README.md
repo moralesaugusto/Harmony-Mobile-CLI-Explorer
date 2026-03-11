@@ -33,7 +33,9 @@ pip install -r requirements.txt
 **Open the credentials.txt file, and add the corresponding client_id and access_key
 **
 
-Now you can start using the app. 
 python3 harmony-mobile-cli-explorer 
+
+
+NOTE: Not all the APIs are implemented yet. Make sure you protect your API keys
 
 
