@@ -1,5 +1,5 @@
 # Harmony-Mobile-CLI-Explorer
-Interactive command-line client for the Check Point Harmony Mobile API with device caching, automatic token renewal, and full hard-coded endpoint navigation
+Interactive command-line client for the Check Point Harmony Mobile API with device caching, automatic token renewal, and hard-coded API navigation.
 
 This project assumes your are using US-based portals. So, change it accordingly to the correct server. Not all the APIs are implemented
 https://app.swaggerhub.com/apis-docs/Check-Point/harmony-mobile/1.0.0-oas7 
