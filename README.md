@@ -33,7 +33,33 @@ pip install -r requirements.txt
 **Open the credentials.txt file, and add the corresponding client_id and access_key
 **
 
-python3 harmony-mobile-cli-explorer 
+python3 harmony-mobile-cli-explorer.py
+
+Authenticated successfully
+
+Loading devices into memory...
+Loaded 5 devices
+Devices were already loaded in memory.
+Cached fields: internal_id, status
+
+internal_id: 6  status: 0
+internal_id: 5  status: 0
+internal_id: 4  status: 0
+internal_id: 3  status: 0
+internal_id: 2  status: 0
+
+========== Harmony Mobile API ==========
+
+1) Alerts
+2) Devices
+3) Device Registration
+4) Device Risk & Security
+5) Policy
+6) Groups
+7) Raw API Explorer
+0) Exit
+
+Select category: 
 
 
 NOTE: Not all the APIs are implemented yet. Make sure you protect your API keys
